@@ -1,0 +1,17 @@
+# git
+.git
+
+# jupyter lab
+.ipynb_checkpoints
+
+# python
+__pycache__/
+
+# large csvs
+*.csv
+
+# plots
+Source.gv*
+
+# logs
+*.log
