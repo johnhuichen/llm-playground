@@ -1,26 +1,13 @@
 #!/usr/bin/env python
 
-from typing import List, Dict
-from dataclasses import dataclass
+from typing import List, Dict, Callable, Optional
 from enum import Enum
 import json
 import requests
 from bs4 import BeautifulSoup
-from typing import Callable
+from dataclasses import dataclass
 
-from llm import LLM, OllamaLLM
-
-
-@dataclass
-class ThoughtProcess:
-    observations: str
-    reasoning: str
-    plan: List[str]
-    self_criticism: str
-    confidence: float
-    alternative_approaches: List[str]
-    next_action: str
-    requires_more_info: bool
+from llm import LLM, OllamaLLM, ThoughtProcess
 
 
 class Tool(Enum):
@@ -28,15 +15,69 @@ class Tool(Enum):
     WEB_SCRAPE = "web_scrape"
 
 
+@dataclass
+class ToolDescription:
+    name: str
+    description: str
+    parameters: Dict[str, str]
+    return_description: str
+    example: str
+    best_practices: Optional[str] = None
+
+
 class ProblemSolver:
     def __init__(self, llm: LLM):
         # Initialize your local LLM
         self.llm = llm
-        # Register available tools
-        self.tools: Dict[str, Callable] = {
-            Tool.GOOGLE_SEARCH.value: self.search_google,
-            Tool.WEB_SCRAPE.value: self.scrape_webpage,
+        # Define tools with detailed documentation
+        self.tools: Dict[str, ToolDescription] = {
+            "ask_user": ToolDescription(
+                name="ask_user",
+                description="Ask the user for specific information needed to proceed",
+                parameters={
+                    "question": "The specific question to ask the user",
+                    "context": "Why this information is needed (will be shown to user)",
+                    "expected_format": "Description of the expected answer format (optional)",
+                },
+                return_description="Returns the user's response as a string",
+                example='ask_user(question="What size cake pan do you have available?", context="This will help determine the recipe quantities", expected_format="Please specify the diameter in inches")',
+                best_practices="""
+                When using this tool:
+                - Ask one specific question at a time
+                - Provide clear context for why the information is needed
+                - Specify expected format when applicable
+                - Don't ask for information already provided
+                - Make questions clear and unambiguous
+                """,
+            ),
+            "google_search": ToolDescription(
+                name="google_search",
+                description="Search Google for information about a specific query",
+                parameters={"query": "The search query string to look up on Google"},
+                return_description="Returns a string containing the top search results",
+                example='google_search(query="chocolate cake recipe best rated")',
+            ),
+            "web_scrape": ToolDescription(
+                name="web_scrape",
+                description="Extract text content from a specified webpage URL",
+                parameters={"url": "The full URL of the webpage to scrape"},
+                return_description="Returns the main text content from the webpage",
+                example='web_scrape(url="https://example.com/recipe/chocolate-cake")',
+            ),
         }
+
+        # Actual tool implementations
+        self.tool_implementations: Dict[str, Callable] = {
+            "ask_user": self.ask_user,
+            "google_search": self.search_google,
+            "web_scrape": self.scrape_webpage,
+        }
+
+    def ask_user(self, question: str, context: str, expected_format: str = "") -> str:
+        format_info = f"\n(Format: {expected_format})" if expected_format else ""
+        print(f"\nContext: {context}")
+        print(f"Question: {question}{format_info}")
+        return input("Your answer: ")
 
     def search_google(self, query: str) -> str:
         # Implement your Google search function here
@@ -55,19 +96,42 @@ class ProblemSolver:
     def get_thought_process(
         self, context: str, previous_attempts: List[str] = []
     ) -> ThoughtProcess:
-        prompt = f"""Given the following context and any previous attempts, analyze the situation including self-reflection.
+        # Create a detailed tool documentation string
+        tools_doc = "\n\n".join(
+            [
+                f"""Tool: {tool.name}
+Description: {tool.description}
+Parameters: {', '.join([f'{k}: {v}' for k, v in tool.parameters.items()])}
+Returns: {tool.return_description}
+Example: {tool.example}"""
+                for tool in self.tools.values()
+            ]
+        )
+
+        prompt = f"""Given the following context, analyze the situation and decide on the next single action to take.
+        Think carefully about which tool would be most appropriate to use next.
         Previous attempts (if any):
         {previous_attempts if previous_attempts else 'None'}
+
+        Available Tools:
+        {tools_doc}
 
         Format your response as JSON with the following structure:
         {{
             "observations": "What you observe about the current situation",
-            "reasoning": "Your reasoning about what to do next",
-            "plan": ["Step 1", "Step 2", ...],
-            "self_criticism": "Critical analysis of your approach, potential pitfalls, and biases",
-            "confidence": 0.0-1.0,
-            "alternative_approaches": ["Alternative 1", "Alternative 2"],
-            "next_action": "The next action to take (either google_search or web_scrape)",
+            "reasoning": "Your thought process about what needs to be done next",
+            "tool_selection": {{
+                "tool_name": "Reasoning for/against using this tool"
+                // Include an entry for each available tool
+            }},
+            "chosen_tool_rationale": "Detailed explanation of why the chosen tool is the best option",
+            "self_criticism": "Critical analysis of this approach, including potential issues",
+            "tool_decision": {{
+                "tool": "name_of_tool",
+                "parameters": {{
+                    "parameter_name": "parameter_value"
+                }}
+            }},
             "requires_more_info": true/false
         }}
 
@@ -78,13 +142,18 @@ class ProblemSolver:
         4. Is this the most efficient solution?
         5. Have I considered all available tools?
 
+        Only choose one tool to use. If you're unsure between multiple tools, use your reasoning 
+        and self-criticism to make a clear decision about which one would be most valuable next.
+
         Context: {context}
 
         Response:"""
 
         # Get response from LLM
         response = self.llm.generate(prompt)
-        print(response)
+        for key, value in vars(response).items():
+            print(f"[{key}]\n")
+            print(f"{value}\n")
         # response = self.llm(
         #     prompt,
         #     max_tokens=512,
